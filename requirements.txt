@@ -1,0 +1,19 @@
+# Memristor Tester — Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# GUI framework
+PyQt5>=5.15.0
+
+# Real-time plotting
+pyqtgraph>=0.13.0
+
+# Numerical computing
+numpy>=1.21.0
+
+# VISA instrument communication (choose one backend)
+pyvisa>=1.13.0          # core PyVISA library
+pyvisa-py>=0.7.0        # pure Python backend — no NI-VISA driver needed
+
+# Optional: if using NI-VISA driver instead of pyvisa-py
+# Install NI-VISA from https://www.ni.com/en/support/downloads/drivers/download.ni-visa.html
+# then pyvisa will use it automatically — no extra pip package needed
