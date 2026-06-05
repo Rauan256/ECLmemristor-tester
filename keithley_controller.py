@@ -111,14 +111,15 @@ class Keithley2450:
     k.close()
     """
 
-    def __init__(self, resource_name: str, timeout_ms: int = 10_000):
+    def __init__(self, resource_name: str, timeout_ms: int = 25_000):
         if not PYVISA_AVAILABLE:
             raise RuntimeError("PyVISA is not installed. Run: pip install pyvisa pyvisa-py")
 
         # Force the use of the Python-only network backend
-        rm = pyvisa.ResourceManager('@py')
+        rm = pyvisa.ResourceManager()
         self._inst = rm.open_resource(resource_name)
         self._inst.timeout = timeout_ms
+        self._inst.chunk_size = 102400 
         self._resource_name = resource_name
 
         # Reset and clear
@@ -151,7 +152,7 @@ class Keithley2450:
         """
         cmds = [
            "*RST",
-           ":ROUT:TERM REAR",                                   # Reset the device to a clean state
+           ":ROUT:TERM FRON",                                   # Reset the device to a clean state
            ":SOUR:FUNC VOLT",
            ":SOUR:VOLT:RANG 20",       # Set a fixed range (e.g., 20V) instead of AUTO
            f":SOUR:VOLT:ILIM {compliance:.3e}",     # Set compliance
@@ -181,6 +182,7 @@ class Keithley2450:
         """Trigger a reading and handle potential buffer sync issues."""
         raw = self._query(":READ?").strip()
         logger.info(f"RAW READ RESPONSE: {raw}")
+        print(f"RAW: {raw}")
 
         # If the response contains text instead of numbers, clear and try once more
         if "KEITHLEY" in raw or "MODEL" in raw:
@@ -192,9 +194,9 @@ class Keithley2450:
 
         try:
             if len(parts) >= 2:
-                return float(parts[1])
+               return float(parts[1])
             if len(parts) == 1:
-                return float(parts[0])
+               return float(parts[0])
             raise ValueError("Empty response")
         except ValueError:
             raise RuntimeError(f"Non-numeric data from instrument: {raw!r}")
@@ -258,21 +260,12 @@ class SweepEngine:
         return np.concatenate([up, down, neg, back])
 
     # ── public ────────────────────────────────────────────────────────────────
+    
     def run_cycle(
         self,
         on_point: Callable[[float, float], None],
         on_done:  Optional[Callable[[], None]] = None,
-    ):
-        """
-        Execute one full sweep cycle.
-
-        Parameters
-        ----------
-        on_point : callable(voltage, current)
-            Called after each measurement point.
-        on_done : callable, optional
-            Called when the sweep finishes (normally or stopped).
-        """
+):
         waveform = self._build_waveform()
         inst     = self.instrument
 
@@ -283,21 +276,25 @@ class SweepEngine:
         try:
             for v in waveform:
                 if self._stop_flag:
-                    logger.info("Sweep stopped by user.")
-                    break
+                   logger.info("Sweep stopped by user.")
+                   break
 
                 inst.set_voltage(float(v))
                 if self.delay > 0:
-                    time.sleep(self.delay)
+                   time.sleep(self.delay)
 
                 i = inst.measure_current()
                 on_point(float(v), float(i))
 
         finally:
-            # Always ramp back to 0 and turn output off
             inst.set_voltage(0.0)
             time.sleep(0.05)
             inst.output_off()
 
             if on_done:
-                on_done()
+               on_done()
+
+
+
+
+        

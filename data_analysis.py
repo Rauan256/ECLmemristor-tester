@@ -84,7 +84,7 @@ class ParameterExtractor:
 
     def __init__(
         self,
-        jump_factor: float  = 3.0,   # current must grow by this factor to count as switching
+        jump_factor: float  = 2.0,   # current must grow by this factor to count as switching
         v_threshold: float  = 0.2,   # ignore points with |V| < v_threshold (noise floor)
         r_percentile: float = 50.0,  # use median for resistance estimate
     ):
