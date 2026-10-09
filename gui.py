@@ -227,6 +227,7 @@ class MainWindow(QMainWindow):
         left_lay.setContentsMargins(0, 0, 0, 0)
 
         left_lay.addWidget(self._build_connection_group())
+        left_lay.addWidget(self._build_sample_group())
         left_lay.addWidget(self._build_sweep_group())
         left_lay.addWidget(self._build_cycle_group())
         left_lay.addWidget(self._build_control_group())
@@ -260,6 +261,31 @@ class MainWindow(QMainWindow):
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.clicked.connect(self._on_connect)
         lay.addWidget(self.connect_btn, 2, 0, 1, 2)
+
+        return grp
+
+    def _build_sample_group(self):
+        grp = StyledGroupBox("Sample Information")
+        lay = QGridLayout(grp)
+        lay.setSpacing(6)
+
+        lay.addWidget(QLabel("Sample name / structure:"), 0, 0, 1, 2)
+        self.sample_name_edit = QLineEdit()
+        self.sample_name_edit.setPlaceholderText("e.g. 10nm 10nm 10nm TiN-HZO-TiN")
+        self.sample_name_edit.setToolTip(
+            "Required. Used to identify the sample in the saved folder and filenames."
+        )
+        lay.addWidget(self.sample_name_edit, 1, 0, 1, 2)
+
+        lay.addWidget(QLabel("Anneal temperature (°C, optional):"), 2, 0, 1, 2)
+        self.anneal_temp_edit = QLineEdit()
+        self.anneal_temp_edit.setPlaceholderText("e.g. 450 (leave blank if not annealed / unknown)")
+        lay.addWidget(self.anneal_temp_edit, 3, 0, 1, 2)
+
+        lay.addWidget(QLabel("Notes (optional):"), 4, 0, 1, 2)
+        self.sample_notes_edit = QLineEdit()
+        self.sample_notes_edit.setPlaceholderText("e.g. device A3, top-left cell")
+        lay.addWidget(self.sample_notes_edit, 5, 0, 1, 2)
 
         return grp
 
@@ -510,6 +536,45 @@ class MainWindow(QMainWindow):
                                 "Please connect to the instrument first.")
             return
 
+        sample_name = self.sample_name_edit.text().strip()
+        if not sample_name:
+            QMessageBox.warning(
+                self,
+                "Sample name required",
+                "Enter a sample name / structure before starting the test.\n"
+                "Example: 10nm 10nm 10nm TiN-HZO-TiN",
+            )
+            self.sample_name_edit.setFocus()
+            return
+
+        anneal_text = self.anneal_temp_edit.text().strip()
+        try:
+            anneal_temp = float(anneal_text) if anneal_text else None
+            if anneal_temp is not None and (not np.isfinite(anneal_temp) or anneal_temp < 0):
+                raise ValueError()
+        except ValueError:
+            QMessageBox.warning(self, "Invalid anneal temperature",
+                                "Enter a non-negative temperature in °C, such as 450, or leave it blank.")
+            self.anneal_temp_edit.setFocus()
+            return
+
+        run_metadata = {
+            "sample_name": sample_name,
+            "sample_notes": self.sample_notes_edit.text().strip(),
+            "anneal_temperature_C": anneal_temp,
+            "sweep_pattern": "0 -> +Vmax -> 0 -> -Vmax -> 0",
+            "vmax_V": self.vmax_spin.value(),
+            "vmin_V": -self.vmax_spin.value(),
+            "step_V": self.step_spin.value(),
+            "delay_s": self.delay_spin.value(),
+            "compliance_A": self.compliance_spin.value(),
+            "nplc": self.nplc_spin.value(),
+            "cycles_requested": self.n_cycles_spin.value(),
+            "retention_after_sweep": self.retention_check.isChecked(),
+            "simulation_mode": self.sim_check.isChecked(),
+            "visa_resource": self.visa_edit.text().strip(),
+        }
+
         self._v_buf.clear()
         self._i_buf.clear()
         self._cycles.clear()
@@ -522,7 +587,11 @@ class MainWindow(QMainWindow):
         self._vset_marker.setVisible(False)
         self._vreset_marker.setVisible(False)
 
-        self._data_mgr = DataManager(output_dir=DATA_DIR)
+        self._data_mgr = DataManager(
+            output_dir=DATA_DIR,
+            sample_name=sample_name,
+            run_metadata=run_metadata,
+        )
 
         self._worker = SweepWorker(
             instrument=self._instrument,
@@ -541,8 +610,13 @@ class MainWindow(QMainWindow):
 
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self.sample_name_edit.setEnabled(False)
+        self.anneal_temp_edit.setEnabled(False)
+        self.sample_notes_edit.setEnabled(False)
         self._set_status("RUNNING", ACCENT)
-        self._log("Sweep started.")
+        self._log(f"Sweep started for sample: {sample_name}")
+        self._log(f"Run ID: {self._data_mgr.run_id}")
+        self._log(f"Run info -> {self._data_mgr.metadata_path}")
 
     def _on_stop(self):
         if self._worker:
@@ -642,15 +716,27 @@ class MainWindow(QMainWindow):
         self._set_status("DONE", GREEN)
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        self._log("All cycles complete.")
+        self.sample_name_edit.setEnabled(True)
+        self.anneal_temp_edit.setEnabled(True)
+        self.sample_notes_edit.setEnabled(True)
         if self._data_mgr:
-            self._log(f"I-V data   -> {self._data_mgr.iv_path}")
-            self._log(f"Parameters -> {self._data_mgr.param_path}")
+            self._data_mgr.finalize()
+        self._log("Sweep finished.")
+        if self._data_mgr:
+            self._log(f"Sample folder -> {self._data_mgr.sample_dir}")
+            self._log(f"Run info      -> {self._data_mgr.metadata_path}")
+            self._log(f"I-V data      -> {self._data_mgr.iv_path}")
+            self._log(f"Parameters    -> {self._data_mgr.param_path}")
 
     def _on_worker_error(self, msg: str):
         self._set_status("ERROR", RED)
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.sample_name_edit.setEnabled(True)
+        self.anneal_temp_edit.setEnabled(True)
+        self.sample_notes_edit.setEnabled(True)
+        if self._data_mgr:
+            self._data_mgr.finalize(status="error", error_message=msg)
         QMessageBox.critical(self, "Sweep Error", msg)
         self._log(f"ERROR: {msg}")
 
@@ -658,7 +744,10 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select folder for PNG export")
         if not folder:
             return
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if self._data_mgr:
+            export_tag = self._data_mgr.run_id
+        else:
+            export_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
         for name, widget in [
             ("iv_curve",     self._iv_plot_widget),
             ("ron_cycle",    self._ron_plot),
@@ -666,14 +755,14 @@ class MainWindow(QMainWindow):
             ("vset_cycle",   self._vset_plot),
             ("vreset_cycle", self._vreset_plot),
         ]:
-            path = os.path.join(folder, f"{name}_{ts}.png")
+            path = os.path.join(folder, f"{name}__{export_tag}.png")
             exporter = pg.exporters.ImageExporter(widget.plotItem)
             exporter.export(path)
         self._log(f"Plots exported to {folder}")
 
     def _on_open_data(self):
        import subprocess, sys
-       path = os.path.abspath("data")
+       path = DATA_DIR
        os.makedirs(path, exist_ok=True)
        if sys.platform == "win32":
          subprocess.Popen(f'explorer "{path}"')

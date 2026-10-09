@@ -13,6 +13,7 @@ Computes for each I–V cycle:
 
 import csv
 import os
+import re
 import numpy as np
 import logging
 from dataclasses import dataclass, field, asdict
@@ -239,25 +240,119 @@ class ParameterExtractor:
 # ═══════════════════════════════════════════════════════════════════════════════
 class DataManager:
     """
-    Accumulates I–V data and extracted parameters; saves to CSV files.
+    Accumulates I-V data and extracted parameters and saves them to CSV files.
+
+    Each run is grouped by sample and given a descriptive run ID, for example:
+
+        10nm_10nm_10nm_TiN-HZO-TiN__N10__sweep_pm3V__step_0p02V__20261010_014300
 
     Files created
     -------------
-    <output_dir>/iv_data_<timestamp>.csv       – raw I–V (all cycles)
-    <output_dir>/parameters_<timestamp>.csv    – extracted parameters
+    <output_dir>/<sample>/run_info__<run_id>.csv
+    <output_dir>/<sample>/iv_data__<run_id>.csv
+    <output_dir>/<sample>/parameters__<run_id>.csv
     """
 
-    def __init__(self, output_dir: str = "data"):
-        self.output_dir   = output_dir
+    def __init__(
+        self,
+        output_dir: str = "data",
+        sample_name: str = "sample",
+        run_metadata: Optional[dict] = None,
+    ):
+        self.output_dir = output_dir
+        self.sample_name = (sample_name or "sample").strip()
+        self.run_metadata = dict(run_metadata or {})
+        self.run_metadata.setdefault("sample_name", self.sample_name)
+
         os.makedirs(output_dir, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._iv_path     = os.path.join(output_dir, f"iv_data_{ts}.csv")
-        self._param_path  = os.path.join(output_dir, f"parameters_{ts}.csv")
-        self._iv_header_written    = False
+
+        safe_sample = self._safe_component(self.sample_name, max_len=60)
+        cycles = self.run_metadata.get("cycles_requested")
+        vmax = self.run_metadata.get("vmax_V")
+        step = self.run_metadata.get("step_V")
+        compliance = self.run_metadata.get("compliance_A")
+        anneal = self.run_metadata.get("anneal_temperature_C")
+
+        tag_parts = [safe_sample]
+        if anneal is not None:
+            tag_parts.append(f"anneal_{self._num_tag(anneal)}C")
+        if cycles is not None:
+            tag_parts.append(f"N{cycles}")
+        if vmax is not None:
+            tag_parts.append(f"sweep_pm{self._num_tag(vmax)}V")
+        if step is not None:
+            tag_parts.append(f"step_{self._num_tag(step)}V")
+        if compliance is not None:
+            tag_parts.append(f"Icomp_{self._current_tag(compliance)}")
+        tag_parts.append(ts)
+
+        self._run_id = "__".join(tag_parts)
+        self._sample_dir = os.path.join(output_dir, safe_sample)
+        os.makedirs(self._sample_dir, exist_ok=True)
+
+        self._iv_path = os.path.join(self._sample_dir, f"iv_data__{self._run_id}.csv")
+        self._param_path = os.path.join(self._sample_dir, f"parameters__{self._run_id}.csv")
+        self._metadata_path = os.path.join(self._sample_dir, f"run_info__{self._run_id}.csv")
+
+        self._iv_header_written = False
         self._param_header_written = False
 
-        self.all_iv:     List[IVData]          = []
+        self.all_iv: List[IVData] = []
         self.all_params: List[CycleParameters] = []
+
+        self.run_metadata["started_at"] = datetime.now().isoformat()
+        self.run_metadata["cycles_completed"] = 0
+        self.run_metadata["run_status"] = "running"
+        self._write_run_metadata()
+
+    @staticmethod
+    def _safe_component(value: str, max_len: int = 80) -> str:
+        """Convert user-entered sample text into a filesystem-safe name."""
+        text = value.strip()
+        text = re.sub(r"\s+", "_", text)
+        # Replace characters forbidden in Windows filenames while preserving
+        # useful Unicode sample names and material symbols.
+        text = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", text)
+        text = re.sub(r"_+", "_", text).strip(" ._-")
+        return (text or "sample")[:max_len]
+
+    @staticmethod
+    def _num_tag(value) -> str:
+        """Compact, filename-safe numeric representation: 0.02 -> 0p02."""
+        try:
+            text = f"{float(value):g}"
+        except (TypeError, ValueError):
+            text = str(value)
+        return text.replace("-", "m").replace("+", "p").replace(".", "p")
+
+    @classmethod
+    def _current_tag(cls, value) -> str:
+        """Human-readable compliance-current tag for filenames."""
+        try:
+            current = float(value)
+        except (TypeError, ValueError):
+            return cls._safe_component(str(value), max_len=16)
+
+        magnitude = abs(current)
+        if magnitude >= 1.0:
+            return f"{cls._num_tag(current)}A"
+        if magnitude >= 1e-3:
+            return f"{cls._num_tag(current * 1e3)}mA"
+        if magnitude >= 1e-6:
+            return f"{cls._num_tag(current * 1e6)}uA"
+        return f"{cls._num_tag(current * 1e9)}nA"
+
+    def _write_run_metadata(self):
+        metadata = {
+            "run_id": self._run_id,
+            **self.run_metadata,
+        }
+        with open(self._metadata_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["field", "value"])
+            for key, value in metadata.items():
+                writer.writerow([key, value])
 
     # ── appending data ───────────────────────────────────────────────────────
     def add_iv(self, iv: IVData):
@@ -267,6 +362,26 @@ class DataManager:
     def add_params(self, params: CycleParameters):
         self.all_params.append(params)
         self._write_params(params)
+        self.run_metadata["cycles_completed"] = len(self.all_params)
+        self._write_run_metadata()
+
+    def finalize(self, status: Optional[str] = None, error_message: Optional[str] = None):
+        """Mark a run completed/stopped/error and persist final run metadata."""
+        completed = len(self.all_params)
+        requested = self.run_metadata.get("cycles_requested")
+
+        if status is None:
+            try:
+                status = "completed" if completed >= int(requested) else "stopped"
+            except (TypeError, ValueError):
+                status = "completed"
+
+        self.run_metadata["cycles_completed"] = completed
+        self.run_metadata["run_status"] = status
+        self.run_metadata["finished_at"] = datetime.now().isoformat()
+        if error_message:
+            self.run_metadata["error_message"] = error_message
+        self._write_run_metadata()
 
     # ── CSV writers ──────────────────────────────────────────────────────────
     def _write_iv(self, iv: IVData):
@@ -274,21 +389,33 @@ class DataManager:
         with open(self._iv_path, mode, newline="") as f:
             writer = csv.writer(f)
             if not self._iv_header_written:
-                writer.writerow(["cycle_index", "timestamp", "voltage_V", "current_A"])
+                writer.writerow(["sample_name", "run_id", "cycle_index", "timestamp", "voltage_V", "current_A"])
                 self._iv_header_written = True
             for v, i in zip(iv.voltages, iv.currents):
-                writer.writerow([iv.cycle_index, iv.timestamp, f"{v:.8g}", f"{i:.8g}"])
+                writer.writerow([
+                    self.sample_name,
+                    self._run_id,
+                    iv.cycle_index,
+                    iv.timestamp,
+                    f"{v:.8g}",
+                    f"{i:.8g}",
+                ])
 
     def _write_params(self, p: CycleParameters):
         mode = "a"
+        row = {
+            "sample_name": self.sample_name,
+            "run_id": self._run_id,
+            **asdict(p),
+        }
         with open(self._param_path, mode, newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(asdict(p).keys()))
+            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
             if not self._param_header_written:
                 writer.writeheader()
                 self._param_header_written = True
-            writer.writerow(asdict(p))
+            writer.writerow(row)
 
-    # ── accessors for plotting ────────────────────────────────────────────────
+    # ── accessors for plotting ───────────────────────────────────────────────
     def get_cycle_numbers(self) -> List[int]:
         return [p.cycle_index for p in self.all_params]
 
@@ -296,6 +423,22 @@ class DataManager:
         return [getattr(p, attr) for p in self.all_params]
 
     @property
-    def iv_path(self)    -> str: return self._iv_path
+    def iv_path(self) -> str:
+        return self._iv_path
+
     @property
-    def param_path(self) -> str: return self._param_path
+    def param_path(self) -> str:
+        return self._param_path
+
+    @property
+    def metadata_path(self) -> str:
+        return self._metadata_path
+
+    @property
+    def sample_dir(self) -> str:
+        return self._sample_dir
+
+    @property
+    def run_id(self) -> str:
+        return self._run_id
+

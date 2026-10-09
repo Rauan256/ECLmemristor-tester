@@ -89,8 +89,10 @@ python gui.py
 1. Launch `gui.py`
 2. Tick **Simulation mode** checkbox
 3. Click **Connect**
-4. Set parameters (Vmax = 3V, Compliance = 0.001A recommended)
-5. Click **START**
+4. Enter a **Sample name / structure** (required), e.g. `10nm 10nm 10nm TiN-HZO-TiN`
+5. Optionally add a short note such as `device A3, top-left cell`
+6. Set parameters (Vmax = 3V, Compliance = 0.001A recommended)
+7. Click **START**
 
 You will see a realistic hysteresis loop and all parameters extracted automatically.
 
@@ -100,8 +102,10 @@ You will see a realistic hysteresis loop and all parameters extracted automatica
 3. Untick Simulation mode
 4. Click **Connect**
 5. Connect device probes: one probe to **FORCE HI**, other to **FORCE LO**
-6. Set sweep parameters (see recommended values below)
-7. Click **START**
+6. Enter a **Sample name / structure** before the run
+7. Optionally enter a note identifying the device/cell
+8. Set sweep parameters (see recommended values below)
+9. Click **START**
 
 ### Recommended sweep parameters for TiN–HZO–TiN
 
@@ -134,23 +138,35 @@ Fresh HZO devices require a higher voltage forming step before normal cycling:
 
 ## Output Files
 
-Every measurement run creates two timestamped CSV files in the `data/` folder:
+Before every run, the GUI requires a **Sample name / structure**. You can also enter the **Anneal temperature (°C)**; leave it empty if unknown or not annealed. The application creates a folder for that sample and uses the sample plus the main sweep settings in every filename.
 
-**`iv_data_YYYYMMDD_HHMMSS.csv`** — raw I–V points
+Example sample name:
 ```
-cycle_index, timestamp, voltage_V, current_A
-1, 2026-05-08T15:58:17, 0.0, 2.3e-08
-1, 2026-05-08T15:58:17, 0.02, 2.4e-08
-...
+10nm 10nm 10nm TiN-HZO-TiN
 ```
 
-**`parameters_YYYYMMDD_HHMMSS.csv`** — extracted parameters per cycle
+Example output:
 ```
-cycle_index, timestamp, vset, vreset, ron, roff, on_off_ratio
-1, 2026-05-08T15:58:17, 2.47, -1.83, 1240.5, 98450.2, 79.4
-2, 2026-05-08T15:58:36, 2.51, -1.79, 1310.1, 97200.8, 74.2
-...
+data/
+└── 10nm_10nm_10nm_TiN-HZO-TiN/
+    ├── run_info__10nm_10nm_10nm_TiN-HZO-TiN__anneal_450C__N10__sweep_pm3V__step_0p02V__Icomp_1mA__YYYYMMDD_HHMMSS.csv
+    ├── iv_data__10nm_10nm_10nm_TiN-HZO-TiN__anneal_450C__N10__sweep_pm3V__step_0p02V__Icomp_1mA__YYYYMMDD_HHMMSS.csv
+    └── parameters__10nm_10nm_10nm_TiN-HZO-TiN__anneal_450C__N10__sweep_pm3V__step_0p02V__Icomp_1mA__YYYYMMDD_HHMMSS.csv
 ```
+
+`pm3V` means the bipolar sweep reaches both **+3 V and -3 V**.
+
+**`run_info__...csv`** stores the exact run setup once:
+- sample name, anneal temperature (°C, optional), and optional notes
+- sweep pattern (`0 -> +Vmax -> 0 -> -Vmax -> 0`)
+- Vmax/Vmin and voltage step
+- delay, compliance current, and NPLC
+- requested number of cycles, actual cycles saved, and final run status
+- simulation/real-instrument setting and VISA resource
+
+**`iv_data__...csv`** contains raw I-V points and includes `sample_name` and `run_id` columns.
+
+**`parameters__...csv`** contains Vset, Vreset, Ron, Roff, and On/Off ratio for each cycle, also with `sample_name` and `run_id` columns.
 
 ---
 
